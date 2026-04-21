@@ -14,3 +14,8 @@ VRMovementTracker_BurstDebugInformation_DoNotShip/
 .DS_Store
 *.csproj
 *.sln
+
+# Markdown files (except README)
+*.md
+!README.md
+!readme.md
