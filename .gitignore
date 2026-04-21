@@ -1,0 +1,16 @@
+[Ll]ibrary/
+[Tt]emp/
+[Oo]bj/
+[Bb]uild/
+[Bb]uilds/
+Logs/
+UserSettings/
+*.apk
+*.aab
+*.unitypackage
+*.tmp
+TempAssembly.dll
+VRMovementTracker_BurstDebugInformation_DoNotShip/
+.DS_Store
+*.csproj
+*.sln
