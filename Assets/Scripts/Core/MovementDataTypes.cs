@@ -92,6 +92,11 @@ namespace VRMovementTracker
         public List<float> trunkForwardLeanPerFrame = new List<float>();
         public List<AnomalyLevel> trunkForwardLeanLevels = new List<AnomalyLevel>();
 
+        // Trunk lateral lean levels — stored so the persistence filter can be applied.
+        // Computed from trunkLeanPerFrame via ClassifyTrunkLean; use these in playback
+        // instead of calling ClassifyTrunkLean() per-frame so filtering is respected.
+        public List<AnomalyLevel> trunkLateralLeanLevels = new List<AnomalyLevel>();
+
         public int totalFrames;
         public int anomalyFrames;
         public float maxKneeAsymmetry;

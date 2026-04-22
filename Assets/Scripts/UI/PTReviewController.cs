@@ -40,6 +40,8 @@ namespace VRMovementTracker
 
         private bool _loaded = false;
         private SquatAnalysisResult _analysis;
+        private float _statusClearTimer = 0f;
+        private const float StatusClearDelay = 5f;
 
         void Start()
         {
@@ -52,6 +54,14 @@ namespace VRMovementTracker
 
             HandleInput();
             UpdateUI();
+
+            // Clear status label after delay so it doesn't persist in the PT's view.
+            if (_statusClearTimer > 0f)
+            {
+                _statusClearTimer -= Time.deltaTime;
+                if (_statusClearTimer <= 0f && statusText != null)
+                    statusText.text = "";
+            }
         }
 
         private void HandleInput()
@@ -120,66 +130,12 @@ namespace VRMovementTracker
 
         private void UpdateUI()
         {
-            // Frame counter
             if (frameCounter != null)
             {
-                frameCounter.text = $"Frame {playback.CurrentFrame + 1}/{playback.TotalFrames}" +
-                                    $"  |  {playback.PlaybackTime:F2}s / {playback.TotalDuration:F1}s" +
-                                    $"  |  Speed: {_speeds[_speedIndex]}x" +
-                                    $"  |  {(playback.IsPlaying ? "PLAYING" : "PAUSED")}";
-            }
-
-            // Data panel with current frame's angle data
-            if (dataPanel != null && _analysis != null)
-            {
-                int frame = playback.CurrentFrame;
-                string data = "";
-
-                if (frame < _analysis.kneeAngles.Count)
-                {
-                    var knee = _analysis.kneeAngles[frame];
-                    data += $"KNEE ANGLES\n";
-                    data += $"  Left:  {knee.leftAngle:F1}°\n";
-                    data += $"  Right: {knee.rightAngle:F1}°\n";
-                    data += $"  Asymmetry: {knee.asymmetry:F1}° [{knee.level}]\n\n";
-                }
-
-                if (frame < _analysis.hipAngles.Count)
-                {
-                    var hip = _analysis.hipAngles[frame];
-                    data += $"HIP ANGLES\n";
-                    data += $"  Left:  {hip.leftAngle:F1}°\n";
-                    data += $"  Right: {hip.rightAngle:F1}°\n";
-                    data += $"  Asymmetry: {hip.asymmetry:F1}° [{hip.level}]\n\n";
-                }
-
-                if (frame < _analysis.trunkLeanPerFrame.Count)
-                {
-                    float lean = _analysis.trunkLeanPerFrame[frame];
-                    var leanLevel = JointAngleCalculator.ClassifyTrunkLean(lean);
-                    float fwdLean = frame < _analysis.trunkForwardLeanPerFrame.Count
-                        ? _analysis.trunkForwardLeanPerFrame[frame] : 0f;
-                    var fwdLevel = frame < _analysis.trunkForwardLeanLevels.Count
-                        ? _analysis.trunkForwardLeanLevels[frame] : AnomalyLevel.Normal;
-                    data += $"TRUNK LEAN\n";
-                    data += $"  Lateral: {lean:F1}° [{leanLevel}]\n";
-                    data += $"  Forward: {fwdLean:F1}° [{fwdLevel}]\n\n";
-                }
-
-                if (frame < _analysis.fppaLeft.Count)
-                {
-                    data += $"FPPA (Knee Valgus)\n";
-                    data += $"  Left:  {_analysis.fppaLeft[frame]:F1}° [{_analysis.fppaLevelsLeft[frame]}]\n";
-                    data += $"  Right: {_analysis.fppaRight[frame]:F1}° [{_analysis.fppaLevelsRight[frame]}]\n\n";
-                }
-
-                if (frame < _analysis.frameLevels.Count)
-                {
-                    data += $"OVERALL: {_analysis.frameLevels[frame]}\n";
-                    data += $"Anomaly frames: {_analysis.anomalyFrames}/{_analysis.totalFrames}";
-                }
-
-                dataPanel.text = data;
+                string state = playback.IsPlaying ? "PLAYING" : "PAUSED";
+                frameCounter.text =
+                    $"FRAME {playback.CurrentFrame + 1} / {playback.TotalFrames}" +
+                    $"  \u00b7  {_speeds[_speedIndex]}x  \u00b7  {state}";
             }
         }
 
@@ -214,17 +170,15 @@ namespace VRMovementTracker
             playback.LoadRecording(recording, _analysis);
             _loaded = true;
 
+            // Set frame counter font size to 36pt for VR legibility.
+            if (frameCounter != null)
+                frameCounter.fontSize = 36f;
+
+            // Show a brief summary; auto-clears after StatusClearDelay seconds
+            // so it doesn't clutter the PT's view of the skeleton.
             string filename = Path.GetFileName(pathToLoad);
-            SetStatus($"Loaded: {filename}\n" +
-                      $"{recording.frameCount} frames, {recording.totalDuration:F1}s\n" +
-                      $"Max knee asymmetry: {_analysis.maxKneeAsymmetry:F1}°\n\n" +
-                      $"Controls:\n" +
-                      $"  A = Play/Pause\n" +
-                      $"  Right stick L/R = Step frames\n" +
-                      $"  B = Cycle speed\n" +
-                      $"  Left stick L/R = Rotate skeleton\n" +
-                      $"  X = Reset rotation\n" +
-                      $"  [Q/E/R in editor]");
+            SetStatus($"Loaded: {filename}  |  {recording.frameCount} frames, {recording.totalDuration:F1}s");
+            _statusClearTimer = StatusClearDelay;
         }
 
         private void SetStatus(string text)

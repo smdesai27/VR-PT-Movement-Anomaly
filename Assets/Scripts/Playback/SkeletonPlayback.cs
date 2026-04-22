@@ -227,10 +227,10 @@ namespace VRMovementTracker
                 }
 
                 // Trunk: worst of lateral lean and forward lean. [Task 2d]
-                if (frameIndex < _analysis.trunkLeanPerFrame.Count)
+                // Both use pre-computed, persistence-filtered level lists — not on-the-fly.
+                if (frameIndex < _analysis.trunkLateralLeanLevels.Count)
                 {
-                    AnomalyLevel lateralLevel = JointAngleCalculator.ClassifyTrunkLean(
-                        _analysis.trunkLeanPerFrame[frameIndex]);
+                    AnomalyLevel lateralLevel = _analysis.trunkLateralLeanLevels[frameIndex];
                     AnomalyLevel forwardLevel = frameIndex < _analysis.trunkForwardLeanLevels.Count
                         ? _analysis.trunkForwardLeanLevels[frameIndex] : AnomalyLevel.Normal;
                     AnomalyLevel trunkLevel = JointAngleCalculator.WorstLevel(lateralLevel, forwardLevel);

@@ -35,8 +35,41 @@ namespace VRMovementTracker
                 }
             }
 
-            float maxKneeAsym = 0f;
-            float maxHipAsym  = 0f;
+            // --- Diagnostic 3: log sagittalNormal so we can verify it in logcat ---
+            // Expected: near-horizontal unit vector (|Y| ≈ 0), magnitude ≈ 1.
+            // For a patient facing +Z the result is (0,0,−1); facing +X gives (−1,0,0).
+            Debug.Log($"[SquatAnalyzer] SagittalNormal: {sagittalNormal}  " +
+                      $"(|Y|={Mathf.Abs(sagittalNormal.y):F3} should be ≈0, " +
+                      $"mag={sagittalNormal.magnitude:F3} should be ≈1)");
+
+            // --- Diagnostic 1 & 2: FPPA synthetic unit test ---
+            // Validates ComputeFPPA math with known geometry before processing real data.
+            // Positions are WORLD SPACE (SkeletonResolver.CaptureFrame stores bone.position,
+            // which is Unity world-space regardless of the character's local scale/offset).
+            // sagittalNormal = (0,0,−1) is what the formula produces for a patient facing +Z.
+            {
+                var sn       = new Vector3(0f, 0f, -1f);
+                var hipPos   = new Vector3(0f, 1f, 0f);
+                var anklePos = new Vector3(0f, 0f, 0f);
+
+                float straight = JointAngleCalculator.ComputeFPPA(hipPos, new Vector3( 0f,   0.5f, 0f), anklePos, sn);
+                float valgus   = JointAngleCalculator.ComputeFPPA(hipPos, new Vector3( 0.2f, 0.5f, 0f), anklePos, sn);
+                float varus    = JointAngleCalculator.ComputeFPPA(hipPos, new Vector3(-0.2f, 0.5f, 0f), anklePos, sn);
+
+                Debug.Log(
+                    $"[SquatAnalyzer] FPPA unit test  (sagittalNormal={sn}):\n" +
+                    $"  Straight leg (knee on axis):       {straight:F1}°  (expect ≈  0°)\n" +
+                    $"  Valgus  (knee +0.20 m lateral):   {valgus:F1}°  (expect ≈+22.6°, positive)\n" +
+                    $"  Varus   (knee -0.20 m lateral):   {varus:F1}°  (expect ≈-22.6°, negative)\n" +
+                    $"  Positions: WORLD SPACE (bone.position from SkeletonResolver.CaptureFrame)");
+            }
+
+            float maxKneeAsym = 0f, sumKneeAsym = 0f;
+            float maxHipAsym  = 0f, sumHipAsym  = 0f;
+            float maxTrunkLateral = 0f;
+            float maxTrunkForward = 0f;
+            float maxFppaAbsL = 0f, maxFppaValgusL = 0f, maxFppaVarusL = 0f;
+            float maxFppaAbsR = 0f, maxFppaValgusR = 0f, maxFppaVarusR = 0f;
 
             foreach (var frame in recording.frames)
             {
@@ -51,6 +84,7 @@ namespace VRMovementTracker
 
                 float trunkLean = ComputeTrunkLean(positions);
                 result.trunkLeanPerFrame.Add(trunkLean);
+                result.trunkLateralLeanLevels.Add(JointAngleCalculator.ClassifyTrunkLean(trunkLean));
 
                 // FPPA — dynamic knee valgus per side [Task 2c]
                 float fppaL = 0f, fppaR = 0f;
@@ -105,7 +139,21 @@ namespace VRMovementTracker
                 result.frameLevels.Add(frameLevel);
 
                 if (kneeData.asymmetry > maxKneeAsym) maxKneeAsym = kneeData.asymmetry;
+                sumKneeAsym += kneeData.asymmetry;
                 if (hipData.asymmetry  > maxHipAsym)  maxHipAsym  = hipData.asymmetry;
+                sumHipAsym  += hipData.asymmetry;
+
+                float absLateral = Mathf.Abs(trunkLean);
+                if (absLateral > maxTrunkLateral) maxTrunkLateral = absLateral;
+                if (Mathf.Abs(forwardLean) > maxTrunkForward) maxTrunkForward = Mathf.Abs(forwardLean);
+
+                float absL = Mathf.Abs(fppaL), absR = Mathf.Abs(fppaR);
+                if (absL > maxFppaAbsL) maxFppaAbsL = absL;
+                if (absR > maxFppaAbsR) maxFppaAbsR = absR;
+                if (fppaL > maxFppaValgusL) maxFppaValgusL = fppaL;
+                if (-fppaL > maxFppaVarusL) maxFppaVarusL = -fppaL;
+                if (fppaR > maxFppaValgusR) maxFppaValgusR = fppaR;
+                if (-fppaR > maxFppaVarusR) maxFppaVarusR = -fppaR;
             }
 
             result.maxKneeAsymmetry = maxKneeAsym;
@@ -114,11 +162,20 @@ namespace VRMovementTracker
             // 3-frame persistence filter [Task 2b]: downgrade any Severe frame to Mild
             // unless 3 consecutive frames (including the current one, looking backward)
             // are all Severe in the raw data. 30 FPS → 3 frames ≈ 100 ms.
+            // Snapshot frameLevels before filtering so we can count downgrades.
+            var rawFrameLevels = new List<AnomalyLevel>(result.frameLevels);
             ApplyPersistenceFilter(result.frameLevels);
             ApplyPersistenceFilter(result.fppaLevelsLeft);
             ApplyPersistenceFilter(result.fppaLevelsRight);
+            ApplyPersistenceFilter(result.trunkLateralLeanLevels);
+            ApplyPersistenceFilter(result.trunkForwardLeanLevels);
             ApplyPersistenceFilterToAngleData(result.kneeAngles);
             ApplyPersistenceFilterToAngleData(result.hipAngles);
+
+            int persistenceDowngrades = 0;
+            for (int i = 0; i < rawFrameLevels.Count; i++)
+                if (rawFrameLevels[i] == AnomalyLevel.Severe && result.frameLevels[i] == AnomalyLevel.Mild)
+                    persistenceDowngrades++;
 
             // Re-count anomaly frames after filtering
             int anomalyCount = 0;
@@ -126,9 +183,17 @@ namespace VRMovementTracker
                 if (level != AnomalyLevel.Normal) anomalyCount++;
             result.anomalyFrames = anomalyCount;
 
-            Debug.Log($"[SquatAnalyzer] Analysis complete: {result.totalFrames} frames, " +
-                      $"{result.anomalyFrames} anomaly frames ({(100f * result.anomalyFrames / result.totalFrames):F1}%), " +
-                      $"max knee asymmetry: {result.maxKneeAsymmetry:F1}°, max hip asymmetry: {result.maxHipAsymmetry:F1}°");
+            float n = result.totalFrames > 0 ? result.totalFrames : 1f;
+            Debug.Log(
+                $"[SquatAnalyzer] Analysis complete:\n" +
+                $"  Frames: {result.totalFrames}, Anomaly frames: {result.anomalyFrames} ({(100f * result.anomalyFrames / n):F1}%)\n" +
+                $"  Knee asymmetry:   max {result.maxKneeAsymmetry:F1}°, mean {(sumKneeAsym / n):F1}°\n" +
+                $"  Hip asymmetry:    max {result.maxHipAsymmetry:F1}°, mean {(sumHipAsym / n):F1}°\n" +
+                $"  FPPA left:        max |{maxFppaAbsL:F1}°|  (valgus max {maxFppaValgusL:F1}°, varus max {maxFppaVarusL:F1}°)\n" +
+                $"  FPPA right:       max |{maxFppaAbsR:F1}°|  (valgus max {maxFppaValgusR:F1}°, varus max {maxFppaVarusR:F1}°)\n" +
+                $"  Trunk lateral:    max {maxTrunkLateral:F1}°\n" +
+                $"  Trunk forward:    max {maxTrunkForward:F1}°\n" +
+                $"  Persistence filter: downgraded {persistenceDowngrades} severe frames to mild");
 
             return result;
         }

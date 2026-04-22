@@ -39,7 +39,7 @@ namespace VRMovementTracker
 
         void Start()
         {
-            SetStatus("Press RIGHT TRIGGER to start recording");
+            SetStatus("Press RIGHT TRIGGER\nto start recording");
             if (timerText != null) timerText.text = "";
         }
 
@@ -94,7 +94,7 @@ namespace VRMovementTracker
                 yield return new WaitForSeconds(1f);
             }
 
-            SetStatus("RECORDING — Perform 5 squats\nPress RIGHT TRIGGER to stop");
+            SetStatus("RECORDING\nPerform 5 squats");
             recorder.StartRecording();
             _state = State.Recording;
         }
@@ -104,7 +104,7 @@ namespace VRMovementTracker
             string path = recorder.StopRecording();
             _state = State.Saved;
 
-            SetStatus($"Recording saved!\n{recorder.FramesCaptured} frames captured\n\nHand headset to PT for review.");
+            SetStatus($"SAVED\nHand headset to PT");
             if (timerText != null)
                 timerText.text = $"Duration: {recorder.RecordingTime:F1}s";
         }
