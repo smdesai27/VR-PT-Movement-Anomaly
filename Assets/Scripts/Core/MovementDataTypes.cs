@@ -80,6 +80,18 @@ namespace VRMovementTracker
         public List<AngleData> hipAngles = new List<AngleData>();
         public List<float> trunkLeanPerFrame = new List<float>();
         public List<AnomalyLevel> frameLevels = new List<AnomalyLevel>();
+
+        // FPPA (Frontal Plane Projection Angle) — dynamic knee valgus per side. [Task 2c]
+        // Sign convention: positive = valgus for both sides. Classify on Mathf.Abs.
+        public List<float> fppaLeft = new List<float>();
+        public List<float> fppaRight = new List<float>();
+        public List<AnomalyLevel> fppaLevelsLeft = new List<AnomalyLevel>();
+        public List<AnomalyLevel> fppaLevelsRight = new List<AnomalyLevel>();
+
+        // Trunk forward lean in the sagittal plane. [Task 2d]
+        public List<float> trunkForwardLeanPerFrame = new List<float>();
+        public List<AnomalyLevel> trunkForwardLeanLevels = new List<AnomalyLevel>();
+
         public int totalFrames;
         public int anomalyFrames;
         public float maxKneeAsymmetry;
@@ -88,9 +100,9 @@ namespace VRMovementTracker
 
     public enum AnomalyLevel
     {
-        Normal,   // < 10 degrees asymmetry
-        Mild,     // 10-20 degrees
-        Severe    // > 20 degrees
+        Normal,   // < 6 degrees (tightened per Nae et al. 2017)
+        Mild,     // 6-12 degrees
+        Severe    // >= 12 degrees
     }
 
     /// <summary>

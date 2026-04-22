@@ -18,51 +18,113 @@ namespace VRMovementTracker
             var result = new SquatAnalysisResult();
             result.totalFrames = recording.frames.Count;
 
+            // Derive a stable sagittal-plane normal from frame 0 hip positions.
+            // sagittalNormal = normalize(cross(up, rightHip - leftHip)) points forward
+            // along the patient's sagittal axis and is used for FPPA and forward-lean.
+            Vector3 sagittalNormal = Vector3.forward;
+            if (recording.frames.Count > 0)
+            {
+                var f0 = BuildPositionMap(recording.frames[0]);
+                if (f0.ContainsKey(SquatJoints.LeftHip) && f0.ContainsKey(SquatJoints.RightHip))
+                {
+                    Vector3 candidate = Vector3.Cross(
+                        Vector3.up,
+                        f0[SquatJoints.RightHip] - f0[SquatJoints.LeftHip]).normalized;
+                    if (candidate.sqrMagnitude > 0.01f)
+                        sagittalNormal = candidate;
+                }
+            }
+
             float maxKneeAsym = 0f;
-            float maxHipAsym = 0f;
-            int anomalyCount = 0;
+            float maxHipAsym  = 0f;
 
             foreach (var frame in recording.frames)
             {
-                // Build a position lookup for this frame
-                var positions = new Dictionary<string, Vector3>();
-                foreach (var joint in frame.joints)
-                {
-                    positions[joint.jointName] = joint.GetPosition();
-                }
+                var positions = BuildPositionMap(frame);
 
-                // Compute knee angles
+                // Existing bilateral asymmetry metrics
                 AngleData kneeData = ComputeKneeAngles(frame.timestamp, positions);
                 result.kneeAngles.Add(kneeData);
 
-                // Compute hip angles
                 AngleData hipData = ComputeHipAngles(frame.timestamp, positions);
                 result.hipAngles.Add(hipData);
 
-                // Compute trunk lean
                 float trunkLean = ComputeTrunkLean(positions);
                 result.trunkLeanPerFrame.Add(trunkLean);
 
-                // Classify this frame's overall anomaly level
+                // FPPA — dynamic knee valgus per side [Task 2c]
+                float fppaL = 0f, fppaR = 0f;
+                bool hasL = positions.ContainsKey(SquatJoints.LeftHip)  &&
+                            positions.ContainsKey(SquatJoints.LeftKnee) &&
+                            positions.ContainsKey(SquatJoints.LeftAnkle);
+                bool hasR = positions.ContainsKey(SquatJoints.RightHip)  &&
+                            positions.ContainsKey(SquatJoints.RightKnee) &&
+                            positions.ContainsKey(SquatJoints.RightAnkle);
+
+                if (hasL)
+                    fppaL = JointAngleCalculator.ComputeFPPA(
+                        positions[SquatJoints.LeftHip],
+                        positions[SquatJoints.LeftKnee],
+                        positions[SquatJoints.LeftAnkle],
+                        sagittalNormal);
+
+                if (hasR)
+                    // Negate right side: SignedAngle returns opposite sign for valgus
+                    // on the right leg with the same sagittalNormal. Negating restores
+                    // the positive-valgus convention for both sides.
+                    fppaR = -JointAngleCalculator.ComputeFPPA(
+                        positions[SquatJoints.RightHip],
+                        positions[SquatJoints.RightKnee],
+                        positions[SquatJoints.RightAnkle],
+                        sagittalNormal);
+
+                result.fppaLeft.Add(fppaL);
+                result.fppaRight.Add(fppaR);
+                result.fppaLevelsLeft.Add(JointAngleCalculator.ClassifyFPPA(fppaL));
+                result.fppaLevelsRight.Add(JointAngleCalculator.ClassifyFPPA(fppaR));
+
+                // Trunk forward lean [Task 2d]
+                float forwardLean = 0f;
+                if (positions.ContainsKey(SquatJoints.Hips) && positions.ContainsKey(SquatJoints.Neck))
+                    forwardLean = JointAngleCalculator.ComputeTrunkForwardLean(
+                        positions[SquatJoints.Hips],
+                        positions[SquatJoints.Neck],
+                        sagittalNormal);
+                result.trunkForwardLeanPerFrame.Add(forwardLean);
+                result.trunkForwardLeanLevels.Add(JointAngleCalculator.ClassifyTrunkForwardLean(forwardLean));
+
+                // Frame-level classification: worst across all active metrics
                 AnomalyLevel frameLevel = JointAngleCalculator.WorstLevel(
                     kneeData.level,
                     hipData.level,
-                    JointAngleCalculator.ClassifyTrunkLean(trunkLean)
+                    JointAngleCalculator.ClassifyTrunkLean(trunkLean),
+                    JointAngleCalculator.ClassifyFPPA(fppaL),
+                    JointAngleCalculator.ClassifyFPPA(fppaR),
+                    JointAngleCalculator.ClassifyTrunkForwardLean(forwardLean)
                 );
                 result.frameLevels.Add(frameLevel);
 
-                if (frameLevel != AnomalyLevel.Normal)
-                    anomalyCount++;
-
-                if (kneeData.asymmetry > maxKneeAsym)
-                    maxKneeAsym = kneeData.asymmetry;
-                if (hipData.asymmetry > maxHipAsym)
-                    maxHipAsym = hipData.asymmetry;
+                if (kneeData.asymmetry > maxKneeAsym) maxKneeAsym = kneeData.asymmetry;
+                if (hipData.asymmetry  > maxHipAsym)  maxHipAsym  = hipData.asymmetry;
             }
 
-            result.anomalyFrames = anomalyCount;
             result.maxKneeAsymmetry = maxKneeAsym;
-            result.maxHipAsymmetry = maxHipAsym;
+            result.maxHipAsymmetry  = maxHipAsym;
+
+            // 3-frame persistence filter [Task 2b]: downgrade any Severe frame to Mild
+            // unless 3 consecutive frames (including the current one, looking backward)
+            // are all Severe in the raw data. 30 FPS → 3 frames ≈ 100 ms.
+            ApplyPersistenceFilter(result.frameLevels);
+            ApplyPersistenceFilter(result.fppaLevelsLeft);
+            ApplyPersistenceFilter(result.fppaLevelsRight);
+            ApplyPersistenceFilterToAngleData(result.kneeAngles);
+            ApplyPersistenceFilterToAngleData(result.hipAngles);
+
+            // Re-count anomaly frames after filtering
+            int anomalyCount = 0;
+            foreach (var level in result.frameLevels)
+                if (level != AnomalyLevel.Normal) anomalyCount++;
+            result.anomalyFrames = anomalyCount;
 
             Debug.Log($"[SquatAnalyzer] Analysis complete: {result.totalFrames} frames, " +
                       $"{result.anomalyFrames} anomaly frames ({(100f * result.anomalyFrames / result.totalFrames):F1}%), " +
@@ -154,6 +216,54 @@ namespace VRMovementTracker
                     positions[SquatJoints.Neck]);
             }
             return 0f;
+        }
+
+        private static Dictionary<string, Vector3> BuildPositionMap(FrameSnapshot frame)
+        {
+            var positions = new Dictionary<string, Vector3>();
+            foreach (var joint in frame.joints)
+                positions[joint.jointName] = joint.GetPosition();
+            return positions;
+        }
+
+        /// <summary>
+        /// 3-frame persistence filter. Downgrades a Severe entry to Mild unless the two
+        /// preceding entries in the *raw* snapshot are also Severe. Operates on a snapshot
+        /// of the original values to avoid cascade effects.
+        /// </summary>
+        private static void ApplyPersistenceFilter(List<AnomalyLevel> levels)
+        {
+            var raw = new List<AnomalyLevel>(levels);
+            for (int i = 0; i < levels.Count; i++)
+            {
+                if (raw[i] == AnomalyLevel.Severe)
+                {
+                    bool persist = i >= 2 &&
+                                   raw[i - 1] == AnomalyLevel.Severe &&
+                                   raw[i - 2] == AnomalyLevel.Severe;
+                    if (!persist)
+                        levels[i] = AnomalyLevel.Mild;
+                }
+            }
+        }
+
+        private static void ApplyPersistenceFilterToAngleData(List<AngleData> angles)
+        {
+            // Snapshot raw levels before modifying
+            var raw = new List<AnomalyLevel>(angles.Count);
+            foreach (var a in angles) raw.Add(a.level);
+
+            for (int i = 0; i < angles.Count; i++)
+            {
+                if (raw[i] == AnomalyLevel.Severe)
+                {
+                    bool persist = i >= 2 &&
+                                   raw[i - 1] == AnomalyLevel.Severe &&
+                                   raw[i - 2] == AnomalyLevel.Severe;
+                    if (!persist)
+                        angles[i].level = AnomalyLevel.Mild;
+                }
+            }
         }
     }
 }

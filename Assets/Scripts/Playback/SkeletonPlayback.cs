@@ -38,9 +38,13 @@ namespace VRMovementTracker
 
         private MovementRecording _recording;
         private SquatAnalysisResult _analysis;
-        private Dictionary<string, GameObject> _jointSpheres = new Dictionary<string, GameObject>();
-        private Dictionary<string, LineRenderer> _boneLines = new Dictionary<string, LineRenderer>();
+        private Dictionary<string, GameObject> _jointSpheres  = new Dictionary<string, GameObject>();
+        private Dictionary<string, GameObject> _jointOutlines = new Dictionary<string, GameObject>(); // [Task 2e]
+        private Dictionary<string, LineRenderer> _boneLines   = new Dictionary<string, LineRenderer>();
         private bool _isLoaded = false;
+
+        // View rotation — driven by left thumbstick via PTReviewController. [Task 1]
+        private float _viewYaw = 0f;
 
         // Offset applied to every recorded joint position so the skeleton renders
         // at this GameObject's transform position (rather than at the patient's
@@ -137,22 +141,22 @@ namespace VRMovementTracker
 
         void Update()
         {
-            if (!_isLoaded || !_isPlaying) return;
+            if (!_isLoaded) return;
 
-            _playbackTime += Time.deltaTime * _playbackSpeed;
-
-            if (_playbackTime >= _recording.totalDuration)
+            if (_isPlaying)
             {
-                _playbackTime = 0f; // Loop
+                _playbackTime += Time.deltaTime * _playbackSpeed;
+                if (_playbackTime >= _recording.totalDuration)
+                    _playbackTime = 0f; // Loop
+
+                int targetFrame = FindFrameAtTime(_playbackTime);
+                if (targetFrame != _currentFrame)
+                    _currentFrame = targetFrame;
             }
 
-            // Find the frame closest to current playback time
-            int targetFrame = FindFrameAtTime(_playbackTime);
-            if (targetFrame != _currentFrame)
-            {
-                _currentFrame = targetFrame;
-                ApplyFrame(_currentFrame);
-            }
+            // Always redraw so rotation updates are visible at headset refresh rate,
+            // both during active playback and while paused.
+            ApplyFrame(_currentFrame);
         }
 
         /// <summary>
@@ -166,29 +170,31 @@ namespace VRMovementTracker
 
             FrameSnapshot frame = _recording.frames[frameIndex];
 
-            // Position joint spheres (apply offset to anchor to PlaybackSkeleton's transform)
+            // Position joint spheres with offset + yaw rotation around the pivot. [Task 1]
             foreach (var joint in frame.joints)
             {
                 if (_jointSpheres.TryGetValue(joint.jointName, out GameObject sphere))
                 {
-                    sphere.transform.position = joint.GetPosition() + _positionOffset;
+                    sphere.transform.position = ApplyYaw(joint.GetPosition() + _positionOffset);
                     sphere.transform.rotation = joint.GetRotation();
                 }
             }
 
-            // Update bone lines (also offset)
+            // Update bone lines with the same offset + yaw. [Task 1]
             foreach (var connection in BoneConnections)
             {
                 string key = connection[0] + "_" + connection[1];
                 if (_boneLines.TryGetValue(key, out LineRenderer line))
                 {
                     Vector3 startPos = Vector3.zero;
-                    Vector3 endPos = Vector3.zero;
+                    Vector3 endPos   = Vector3.zero;
 
                     foreach (var joint in frame.joints)
                     {
-                        if (joint.jointName == connection[0]) startPos = joint.GetPosition() + _positionOffset;
-                        if (joint.jointName == connection[1]) endPos = joint.GetPosition() + _positionOffset;
+                        if (joint.jointName == connection[0])
+                            startPos = ApplyYaw(joint.GetPosition() + _positionOffset);
+                        if (joint.jointName == connection[1])
+                            endPos = ApplyYaw(joint.GetPosition() + _positionOffset);
                     }
 
                     line.SetPosition(0, startPos);
@@ -196,43 +202,58 @@ namespace VRMovementTracker
                 }
             }
 
-            // Color-code joints based on anomaly data
+            // Color-code joints based on anomaly data.
             if (_analysis != null && frameIndex < _analysis.frameLevels.Count)
             {
-                AnomalyLevel frameLevel = _analysis.frameLevels[frameIndex];
-                Color frameColor = GetColorForLevel(frameLevel);
-
-                // Color knee joints individually based on their specific asymmetry
+                // Knee joints: worst of bilateral asymmetry and per-side FPPA. [Tasks 2a, 2c]
                 if (frameIndex < _analysis.kneeAngles.Count)
                 {
-                    var kneeData = _analysis.kneeAngles[frameIndex];
-                    ColorJoint(SquatJoints.LeftKnee, GetColorForLevel(kneeData.level));
-                    ColorJoint(SquatJoints.RightKnee, GetColorForLevel(kneeData.level));
+                    AnomalyLevel kneeAsym = _analysis.kneeAngles[frameIndex].level;
+                    AnomalyLevel fppaL = frameIndex < _analysis.fppaLevelsLeft.Count
+                        ? _analysis.fppaLevelsLeft[frameIndex]  : AnomalyLevel.Normal;
+                    AnomalyLevel fppaR = frameIndex < _analysis.fppaLevelsRight.Count
+                        ? _analysis.fppaLevelsRight[frameIndex] : AnomalyLevel.Normal;
+
+                    ColorJoint(SquatJoints.LeftKnee,  JointAngleCalculator.WorstLevel(kneeAsym, fppaL));
+                    ColorJoint(SquatJoints.RightKnee, JointAngleCalculator.WorstLevel(kneeAsym, fppaR));
                 }
 
+                // Hip joints: bilateral asymmetry only.
                 if (frameIndex < _analysis.hipAngles.Count)
                 {
-                    var hipData = _analysis.hipAngles[frameIndex];
-                    ColorJoint(SquatJoints.LeftHip, GetColorForLevel(hipData.level));
-                    ColorJoint(SquatJoints.RightHip, GetColorForLevel(hipData.level));
+                    AnomalyLevel hipLevel = _analysis.hipAngles[frameIndex].level;
+                    ColorJoint(SquatJoints.LeftHip,  hipLevel);
+                    ColorJoint(SquatJoints.RightHip, hipLevel);
                 }
 
-                // Trunk lean indicator on spine/hips
+                // Trunk: worst of lateral lean and forward lean. [Task 2d]
                 if (frameIndex < _analysis.trunkLeanPerFrame.Count)
                 {
-                    float lean = _analysis.trunkLeanPerFrame[frameIndex];
-                    AnomalyLevel leanLevel = JointAngleCalculator.ClassifyTrunkLean(lean);
-                    ColorJoint(SquatJoints.Hips, GetColorForLevel(leanLevel));
-                    ColorJoint(SquatJoints.Spine, GetColorForLevel(leanLevel));
+                    AnomalyLevel lateralLevel = JointAngleCalculator.ClassifyTrunkLean(
+                        _analysis.trunkLeanPerFrame[frameIndex]);
+                    AnomalyLevel forwardLevel = frameIndex < _analysis.trunkForwardLeanLevels.Count
+                        ? _analysis.trunkForwardLeanLevels[frameIndex] : AnomalyLevel.Normal;
+                    AnomalyLevel trunkLevel = JointAngleCalculator.WorstLevel(lateralLevel, forwardLevel);
+                    ColorJoint(SquatJoints.Hips,  trunkLevel);
+                    ColorJoint(SquatJoints.Spine, trunkLevel);
                 }
 
-                // Remaining joints get the default frame-level color
-                ColorJoint(SquatJoints.LeftAnkle, normalColor);
-                ColorJoint(SquatJoints.RightAnkle, normalColor);
-                ColorJoint(SquatJoints.Neck, normalColor);
-                ColorJoint(SquatJoints.LeftShoulder, normalColor);
-                ColorJoint(SquatJoints.RightShoulder, normalColor);
+                // Remaining joints are diagnostic-neutral.
+                ColorJoint(SquatJoints.LeftAnkle,     AnomalyLevel.Normal);
+                ColorJoint(SquatJoints.RightAnkle,    AnomalyLevel.Normal);
+                ColorJoint(SquatJoints.Neck,           AnomalyLevel.Normal);
+                ColorJoint(SquatJoints.LeftShoulder,  AnomalyLevel.Normal);
+                ColorJoint(SquatJoints.RightShoulder, AnomalyLevel.Normal);
             }
+        }
+
+        /// <summary>
+        /// Rotate worldPos around the PlaybackSkeleton pivot by the current view yaw.
+        /// Returns worldPos unchanged when _viewYaw == 0.
+        /// </summary>
+        private Vector3 ApplyYaw(Vector3 worldPos)
+        {
+            return transform.position + Quaternion.Euler(0, _viewYaw, 0) * (worldPos - transform.position);
         }
 
         // --- Playback controls ---
@@ -240,6 +261,16 @@ namespace VRMovementTracker
         public void Play() { _isPlaying = true; }
         public void Pause() { _isPlaying = false; }
         public void TogglePlayPause() { _isPlaying = !_isPlaying; }
+
+        // --- View rotation (Task 1) ---
+        // Update() calls ApplyFrame every frame, so rotation changes are picked up
+        // automatically at headset refresh rate without extra ApplyFrame calls here.
+
+        /// <summary>Add degrees to the skeleton's yaw rotation around the PlaybackSkeleton pivot.</summary>
+        public void AddYaw(float degrees) { _viewYaw += degrees; }
+
+        /// <summary>Reset view yaw to the original forward-facing orientation.</summary>
+        public void ResetView() { _viewYaw = 0f; }
 
         public void SetPlaybackSpeed(float speed) { _playbackSpeed = speed; }
 
@@ -270,6 +301,7 @@ namespace VRMovementTracker
             foreach (var sphere in _jointSpheres.Values)
                 if (sphere != null) Destroy(sphere);
             _jointSpheres.Clear();
+            _jointOutlines.Clear(); // children are destroyed with their parents above
 
             foreach (var line in _boneLines.Values)
                 if (line != null) Destroy(line.gameObject);
@@ -289,7 +321,6 @@ namespace VRMovementTracker
                     sphere.transform.SetParent(transform);
                     sphere.transform.localScale = Vector3.one * jointSphereRadius * 2f;
 
-                    // Remove collider (we don't need physics on indicators)
                     var collider = sphere.GetComponent<Collider>();
                     if (collider != null) Destroy(collider);
                 }
@@ -297,6 +328,25 @@ namespace VRMovementTracker
                 sphere.name = $"Joint_{jointName}";
                 SetupMaterial(sphere, normalColor);
                 _jointSpheres[jointName] = sphere;
+
+                // Outline child sphere for severe-level accessibility. [Task 2e]
+                // Rendered at 1.7× the joint sphere (in local space), white unlit.
+                // Disabled by default; enabled only when the joint is Severe.
+                GameObject outline = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+                outline.name = "SevereOutline";
+                outline.transform.SetParent(sphere.transform, false);
+                outline.transform.localPosition = Vector3.zero;
+                outline.transform.localScale    = Vector3.one * 1.7f;
+                var outlineCollider = outline.GetComponent<Collider>();
+                if (outlineCollider != null) Destroy(outlineCollider);
+                var outlineRenderer = outline.GetComponent<Renderer>();
+                if (outlineRenderer != null)
+                {
+                    outlineRenderer.material = new Material(Shader.Find("Sprites/Default"));
+                    outlineRenderer.material.color = Color.white;
+                }
+                outline.SetActive(false);
+                _jointOutlines[jointName] = outline;
             }
 
             // Create bone lines
@@ -319,14 +369,29 @@ namespace VRMovementTracker
             }
         }
 
-        private void ColorJoint(string jointName, Color color)
+        /// <summary>
+        /// Color a joint sphere by anomaly level, and apply severity-scaled size
+        /// and white outline for colorblind accessibility. [Task 2e]
+        /// Severe: 1.5× scale + outline enabled.
+        /// Mild/Normal: base scale + outline disabled.
+        /// </summary>
+        private void ColorJoint(string jointName, AnomalyLevel level)
         {
-            if (_jointSpheres.TryGetValue(jointName, out GameObject sphere))
-            {
-                var renderer = sphere.GetComponent<Renderer>();
-                if (renderer != null)
-                    renderer.material.color = color;
-            }
+            if (!_jointSpheres.TryGetValue(jointName, out GameObject sphere)) return;
+
+            var renderer = sphere.GetComponent<Renderer>();
+            if (renderer != null)
+                renderer.material.color = GetColorForLevel(level);
+
+            float baseScale = jointSphereRadius * 2f;
+            bool isSevere   = level == AnomalyLevel.Severe;
+
+            sphere.transform.localScale = isSevere
+                ? Vector3.one * baseScale * 1.5f
+                : Vector3.one * baseScale;
+
+            if (_jointOutlines.TryGetValue(jointName, out GameObject outline))
+                outline.SetActive(isSevere);
         }
 
         private Color GetColorForLevel(AnomalyLevel level)

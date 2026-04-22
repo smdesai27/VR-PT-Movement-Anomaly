@@ -32,6 +32,12 @@ namespace VRMovementTracker
         [Tooltip("If set, load this specific file. Otherwise loads most recent recording.")]
         public string specificRecordingPath = "";
 
+        [Header("Rotation")]
+        [Tooltip("Degrees per second at full left-stick deflection.")]
+        public float rotationSpeed = 90f;
+        [Tooltip("Left-stick deadzone to prevent drift.")]
+        public float stickDeadzone = 0.15f;
+
         private bool _loaded = false;
         private SquatAnalysisResult _analysis;
 
@@ -68,6 +74,15 @@ namespace VRMovementTracker
                 // B button: toggle speed (1x / 0.5x / 0.25x)
                 if (OVRInput.GetDown(OVRInput.Button.Two, OVRInput.Controller.RTouch))
                     CycleSpeed();
+
+                // Left thumbstick X-axis: rotate skeleton yaw
+                Vector2 leftStick = OVRInput.Get(OVRInput.Axis2D.PrimaryThumbstick, OVRInput.Controller.LTouch);
+                if (Mathf.Abs(leftStick.x) > stickDeadzone)
+                    playback.AddYaw(leftStick.x * rotationSpeed * Time.deltaTime);
+
+                // X button (Button.Three on left controller): reset view rotation
+                if (OVRInput.GetDown(OVRInput.Button.Three, OVRInput.Controller.LTouch))
+                    playback.ResetView();
             }
             catch
             {
@@ -85,6 +100,12 @@ namespace VRMovementTracker
                     playback.StepBackward();
                 if (Input.GetKeyDown(KeyCode.S))
                     CycleSpeed();
+                if (Input.GetKey(KeyCode.Q))
+                    playback.AddYaw(-rotationSpeed * Time.deltaTime);
+                if (Input.GetKey(KeyCode.E))
+                    playback.AddYaw(rotationSpeed * Time.deltaTime);
+                if (Input.GetKeyDown(KeyCode.R))
+                    playback.ResetView();
             }
         }
 
@@ -136,8 +157,20 @@ namespace VRMovementTracker
                 {
                     float lean = _analysis.trunkLeanPerFrame[frame];
                     var leanLevel = JointAngleCalculator.ClassifyTrunkLean(lean);
+                    float fwdLean = frame < _analysis.trunkForwardLeanPerFrame.Count
+                        ? _analysis.trunkForwardLeanPerFrame[frame] : 0f;
+                    var fwdLevel = frame < _analysis.trunkForwardLeanLevels.Count
+                        ? _analysis.trunkForwardLeanLevels[frame] : AnomalyLevel.Normal;
                     data += $"TRUNK LEAN\n";
-                    data += $"  Lateral: {lean:F1}° [{leanLevel}]\n\n";
+                    data += $"  Lateral: {lean:F1}° [{leanLevel}]\n";
+                    data += $"  Forward: {fwdLean:F1}° [{fwdLevel}]\n\n";
+                }
+
+                if (frame < _analysis.fppaLeft.Count)
+                {
+                    data += $"FPPA (Knee Valgus)\n";
+                    data += $"  Left:  {_analysis.fppaLeft[frame]:F1}° [{_analysis.fppaLevelsLeft[frame]}]\n";
+                    data += $"  Right: {_analysis.fppaRight[frame]:F1}° [{_analysis.fppaLevelsRight[frame]}]\n\n";
                 }
 
                 if (frame < _analysis.frameLevels.Count)
@@ -187,9 +220,11 @@ namespace VRMovementTracker
                       $"Max knee asymmetry: {_analysis.maxKneeAsymmetry:F1}°\n\n" +
                       $"Controls:\n" +
                       $"  A = Play/Pause\n" +
-                      $"  Thumbstick L/R = Step frames\n" +
+                      $"  Right stick L/R = Step frames\n" +
                       $"  B = Cycle speed\n" +
-                      $"  Walk around to view from different angles");
+                      $"  Left stick L/R = Rotate skeleton\n" +
+                      $"  X = Reset rotation\n" +
+                      $"  [Q/E/R in editor]");
         }
 
         private void SetStatus(string text)
