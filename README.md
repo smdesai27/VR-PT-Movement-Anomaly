@@ -5,8 +5,8 @@ Quest. The headset records body motion, computes geometric biomechanics metrics,
 replays a severity-coded 3D skeleton that a reviewer can walk around and view from any
 angle.
 
-📄 **Write-up, results, and demo:** https://smdesai27.github.io/pt-detective/
-· **Project repo:** [smdesai27/pt-detective](https://github.com/smdesai27/pt-detective)
+📄 **Write-up, results, and demo:** https://smdesai27.github.io/vr-movement-anomaly-review/
+· **Project repo:** [vr-movement-anomaly-review](https://github.com/smdesai27/vr-movement-anomaly-review)
 
 ## Stack
 
